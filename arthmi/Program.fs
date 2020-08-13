@@ -1,8 +1,10 @@
 ﻿open System
-
 open Arthemis
+open FParsec
 
-[<EntryPoint>]
-let main argv =
-    printfn "%s" (Say.hello "F#")
-    0
+while true do
+    Console.Write "> "
+    let line = Console.ReadLine ()
+    match ParseTree.parseScript line with
+    | Success (result, _, _) -> printfn "%A" result
+    | Failure (msg, _, _) -> printfn "%s" msg
