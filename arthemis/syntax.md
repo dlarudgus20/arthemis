@@ -30,11 +30,11 @@ precedence | left-to-right | right-to-left | unary
 4  | `*` `/` `%`
 5  | `|` `&` `^`
 6  | `+` `-`
-7  | `<` `<=` `>` `>=` `=` `<>`
+7  | `<` `<=` `>` `>=` `=` `!=`
 8  | `and`
 9  | `or`
 10 | | | `not`
-11 | | `<-`
+11 | | `=`
 
 # expression
 
@@ -59,4 +59,4 @@ precedence | left-to-right | right-to-left | unary
 - <code>if *expr* then *block-content* *[* elif *expr* then *block-content ... ]* *[* else *block-content ]* end</code>
 - <code>while *expr* do *block-content* end</code>
 - <code>for *identifier* in *expr* do *block-content* end</code>
-- <code>fun ( *[ identifier1, ... ]* ) begin *block-content* end</code>
+- <code>fun *identifier* ( *[ identifier1, ... ]* ) begin *block-content* end</code>

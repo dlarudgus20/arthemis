@@ -14,7 +14,7 @@ type ParseTreeTest() =
             | Success _ -> Assert.True (exp, str)
             | Failure (msg, _, _) -> Assert.False (exp, sprintf "'%s': %s" str msg))
 
-    let equalTest parser (tests: (string * ParseTree option) list) =
+    let exprTest parser (tests: (string * Expression option) list) =
         tests |> List.iter (fun (str, exp) ->
             match run (parser .>> eof) str with
             | Success (result, _, _) ->
@@ -53,6 +53,6 @@ type ParseTreeTest() =
 
     [<Test>]
     member this.ParenthesisTest () =
-        equalTest expression [
+        exprTest expression [
             "a", Some (Identifier "a")
         ]
