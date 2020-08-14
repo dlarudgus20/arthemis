@@ -33,15 +33,14 @@ type Expression =
     | Subscription of Expression * Expression
     | ArrayExpr of Expression list
     | TableExpr of (string * Expression) list
-
-type Statement =
+    | Function of string list * Statement list
+and Statement =
     | Expression of Expression
     | Variable of string * Expression
     | Block of Statement list
     | IfThen of Expression * Statement list * (Expression * Statement list) list * Statement list option
     | WhileDo of Expression * Statement list
     | ForIn of string * Expression * Statement list
-    | Function of string * string list * Statement list
     | BreakStatement
     | ContinueStatement
 
@@ -53,8 +52,6 @@ module ParseTree =
        "while";
        "do";
        "end";
-       "and";
-       "or";
        "break";
        "continue";
        "else";
@@ -63,21 +60,20 @@ module ParseTree =
        "true";
        "for";
        "null";
-       "not";
        "then";
     ]
+
+    let ws = spaces
+    let ws1 = spaces1 <|> eof
+    let token str = skipString str >>. ws
+    let token1 str = skipString str >>. ws1
 
     let id_first c = isLetter c || c = '_'
     let id_remain c = isLetter c || isDigit c || c = '_'
     let identifier =
-        many1Satisfy2 id_first id_remain >>= (fun str ->
+        many1Satisfy2L id_first id_remain "identifier" >>=? (fun str ->
             if Set.contains str keywords then fail "keyword cannot be identifier" else (preturn str))
-
-    let ws = spaces
-    let ws1 = spaces1
-    let newline = skipSepEndBy1 (anyOf "\r\n") ws
-    let token str = attempt (ws >>. skipString str >>. ws)
-    let tokenr1 str = attempt (ws >>. skipString str >>. ws1)
+            .>> ws
 
     let lit_string =
         let normal = satisfy (fun c -> c <> '\\' && c <> '"')
@@ -86,29 +82,31 @@ module ParseTree =
             | c -> c)
         between (skipChar '"') (skipChar '"') (manyChars (normal <|> escaped))
 
-    let lit_number = pfloat
-    let lit_boolean = (skipString "true" >>% true) <|> (skipString "false" >>% false)
-    let lit_null = skipString "null"
+    let lit_number = pfloat .>> ws
+    let lit_boolean = (token "true" >>% true) <|> (token "false" >>% false)
+    let lit_null = token "null"
 
-    let private binop str f = token str >>. preturn (fun x y -> f (x, y))
-    let private binopr1 str f = tokenr1 str >>. preturn (fun x y -> f (x, y))
+    let stt_break = token "break"
+    let stt_continue = token "continue"
+
+    let private binop str f = ws >>. token str >>. preturn (fun x y -> f (x, y))
 
     let rec expression x = op11 x
     and op11 x =
         let op_assign = binop "=" Assignment
-        chainr1 op10 op_assign x
+        (chainr1 op10 op_assign .>> ws) x
 
     and op10 x =
-        let op_not = (tokenr1 "not" >>. op10) |>> LogicalNOT
+        let op_not = (token "!" >>. op10) |>> LogicalNOT
         (op_not <|> op9) x
 
     and op9 x =
-        let op_lor = binopr1 "or" LogicalOR
-        chainl1 op8 op_lor x
+        let op_lor = binop "||" LogicalOR
+        (chainl1 op8 op_lor .>> ws) x
 
     and op8 x =
-        let op_land = binopr1 "and" LogicalAND
-        chainl1 op7 op_land x
+        let op_land = binop "&&" LogicalAND
+        (chainl1 op7 op_land .>> ws) x
 
     and op7 x =
         let op_lt = binop "<" LessThan
@@ -117,30 +115,30 @@ module ParseTree =
         let op_ge = binop ">=" GreaterOrEq
         let op_eq = binop "==" EqualTo
         let op_ne = binop "!=" NotEqualTo
-        chainl1 op6 (op_lt <|> op_le <|> op_gt <|> op_ge <|> op_eq <|> op_ne) x
+        (chainl1 op6 (op_lt <|> op_le <|> op_gt <|> op_ge <|> op_eq <|> op_ne) .>> ws) x
 
     and op6 x =
         let op_add = binop "+" Addition
         let op_sub = binop "-" Subtraction
-        chainl1 op5 (op_add <|> op_sub) x
+        (chainl1 op5 (op_add <|> op_sub) .>> ws) x
 
     and op5 x =
         let op_bor = binop "|" BitwiseOR
         let op_band = binop "&" BitwiseAND
         let op_bxor = binop "^" BitwiseXOR
-        chainl1 op4 (op_bor <|> op_band <|> op_bxor) x
+        (chainl1 op4 (op_bor <|> op_band <|> op_bxor) .>> ws) x
 
     and op4 x =
         let op_mul = binop "*" Multiply
         let op_div = binop "/" Division
         let op_mod = binop "%" Modular
-        chainl1 op3 (op_mul <|> op_div <|> op_mod) x
+        (chainl1 op3 (op_mul <|> op_div <|> op_mod) .>> ws) x
 
     and op3 x =
         let op_fcall =
-            let args = sepBy op2 (token ",")
+            let args = sepBy op2 (token ",") .>> ws
             (op2 .>>. (between (token "(") (token ")") args)) |>> CallExpr
-        ((attempt op_fcall) <|> op2) x
+        (attempt op_fcall <|> op2) x
 
     and op2 x =
         let op_plus = (token "+" >>. op2) |>> UnaryPlus
@@ -152,32 +150,35 @@ module ParseTree =
         | x :: xs -> pack f (f (stt, x)) xs
         | [] -> stt
         let op_member =
-            let names = sepBy1 identifier (token ".")
-            (op0 .>>. names) |>> (fun (expr, names) -> pack MemberAccess expr names)
+            let names = between (token ".") ws (sepBy1 identifier (token "."))
+            (op0 .>>. names)
+            |>> (fun (expr, names) -> pack MemberAccess expr names)
         let op_subscript =
-            let indices = sepBy1 expression (token "]" >>. token "[")
-            (op0 .>>. between (token "[") (token "]") indices) |>> (fun (expr, indices) -> pack Subscription expr indices)
-        ((attempt op_member) <|> (attempt op_subscript) <|> op0) x
+            let indices = sepBy1 expression (token "]" >>. token "[") .>> ws
+            (op0 .>>. between (token "[") (token "]") indices)
+            |>> (fun (expr, indices) -> pack Subscription expr indices)
+        (attempt op_member <|> attempt op_subscript <|> op0) x
 
     and op0 x =
         let op_parenthesis = between (token "(") (token ")") expression
-        let expr_array = between (token "{") (token "}") (sepBy expression (token ","))
-        let terminal =
-            (lit_null >>% LiteralNull)
-            <|> (lit_boolean |>> LiteralBoolean)
-            <|> (lit_string |>> LiteralString)
-            <|> (lit_number |>> LiteralNumber)
-            <|> (identifier |>> Identifier)
-            <|> (expr_array |>> ArrayExpr)
-        ((attempt op_parenthesis) <|> terminal) x
+        (op_parenthesis <|> terminal) x
 
-    let variable =
-        (skipString "var" >>. ws1 >>. identifier .>>. (token "=" >>. expression))
+    and terminal x =
+        let expr_array =
+            between (token "{") (token "}") (sepBy expression (token ","))
+        let funDef =
+            let param = token "fun" >>. between (token "(") (token ")") (sepBy identifier (token ","))
+            let content = token "begin" >>. blockContent .>> token "end" .>> ws
+            param .>>. content
+        ((funDef |>> Function)
+        <|> (lit_null >>% LiteralNull)
+        <|> (lit_boolean |>> LiteralBoolean)
+        <|> (lit_string |>> LiteralString)
+        <|> (lit_number |>> LiteralNumber)
+        <|> (identifier |>> Identifier)
+        <|> (expr_array |>> ArrayExpr)) x
 
-    let stt_break = token "break"
-    let stt_continue = token "continue"
-
-    let rec statement x =
+    and statement x =
         ((variable |>> Variable)
         <|> (stt_break >>% BreakStatement)
         <|> (stt_continue >>% ContinueStatement)
@@ -185,11 +186,13 @@ module ParseTree =
         <|> (ifThen |>> IfThen)
         <|> (whileDo |>> WhileDo)
         <|> (forIn |>> ForIn)
-        <|> (funDef |>> Function)
         <|> (expression |>> Expression)) x
 
-    and private blockContent = (sepEndBy (attempt statement) (newline <|> token ";"))
-    and block = between (skipString "begin" .>> ws1) (token "end") blockContent
+    and variable =
+        (skipString "var" >>. ws1 >>. identifier .>>. (token "=" >>. expression))
+
+    and private blockContent = sepEndBy (statement .>> ws) ((skipAnyOf "\n;") .>> ws)
+    and block = between (token1 "begin") (token "end") blockContent
 
     and ifThen =
         let first = (token "if" >>. expression) .>>. (token "then" >>. blockContent)
@@ -206,11 +209,5 @@ module ParseTree =
         let p = first .>>. (token "do" >>. blockContent .>> token "end")
         p |>> (fun ((index, obj), block) -> (index, obj, block))
 
-    and funDef =
-        let name = token "fun" >>. identifier
-        let param = between (token "(") (token ")") (sepBy identifier (token ","))
-        (name .>>. param) .>>. (token "begin" >>. blockContent .>> token "end")
-        |>> (fun ((a, b), c) -> a, b, c)
-
     let parseScript str =
-        run (statement .>> eof) str
+        run (statement) str

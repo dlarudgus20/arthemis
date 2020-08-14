@@ -6,8 +6,6 @@
 - `while`
 - `do`
 - `end`
-- `and`
-- `or`
 - `break`
 - `continue`
 - `else`
@@ -16,7 +14,6 @@
 - `true`
 - `for`
 - `null`
-- `not`
 - `then`
 
 # operators
@@ -31,9 +28,9 @@ precedence | left-to-right | right-to-left | unary
 5  | `|` `&` `^`
 6  | `+` `-`
 7  | `<` `<=` `>` `>=` `=` `!=`
-8  | `and`
-9  | `or`
-10 | | | `not`
+8  | `&&`
+9  | `||`
+10 | | | `!`
 11 | | `=`
 
 # expression
@@ -47,6 +44,7 @@ precedence | left-to-right | right-to-left | unary
 - <code>*function-expr* ( *[ arg1, ... ]* )</code>
 - <code>*expr1* *infix-op* *expr2*</code>
 - <code>*prefix-op* *expr*</code>
+- <code>fun ( *[ identifier1, ... ]* ) begin *block-content* end</code>
 
 # statement
 
@@ -59,4 +57,3 @@ precedence | left-to-right | right-to-left | unary
 - <code>if *expr* then *block-content* *[* elif *expr* then *block-content ... ]* *[* else *block-content ]* end</code>
 - <code>while *expr* do *block-content* end</code>
 - <code>for *identifier* in *expr* do *block-content* end</code>
-- <code>fun *identifier* ( *[ identifier1, ... ]* ) begin *block-content* end</code>
