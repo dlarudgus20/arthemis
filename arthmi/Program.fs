@@ -22,11 +22,11 @@ let rec mainLoop state =
     else
         match runParserOnString Parser.script state.ParserState "" line with
         | Success (cst, ps, _) ->
-            printfn "AST parse result: %A" cst
+            printfn "parse result: %A" cst
             if state.Verbose then printfn "Parser State: %A" ps
             mainLoop { state with ParserState = ps }
         | Failure (msg, _, _) ->
-            printfn "AST parse error: %s" msg
+            printfn "parse error: %s" msg
             mainLoop state
 
 mainLoop {

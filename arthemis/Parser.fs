@@ -4,10 +4,10 @@ open FParsec
 
 type Expression =
     | VariableRef of int
+    | LiteralNull
     | LiteralString of string
     | LiteralNumber of float
     | LiteralBoolean of bool
-    | LiteralNull
     | UnaryPlus of Expression
     | UnaryMinus of Expression
     | LogicalNOT of Expression
@@ -33,7 +33,7 @@ type Expression =
     | Subscription of Expression * Expression
     | ArrayExpr of Expression list
     | TableExpr of (string * Expression) list
-    | Function of param: int list * closure: int list * body: Statement list
+    | Function of param: int list * name: int option * closure: int list * body: Statement list
 and Statement =
     | Expression of Expression
     | VariableDecl of int * Expression
@@ -47,40 +47,62 @@ and LoopStatement =
     | ContinueStatement
 
 type ParserState = {
-    Vars: int * Map<string, int> list
+    Vars: (* count *) int * (* scopces *) Map<string, int> list
     Closures: (int * Set<int>) list
+    VarDesc: string list
+    ScopeDesc: (string * int) list
+    TagCount: int
 }
 
 module ParserState =
     let empty = {
-        Vars = 1, [ Map.empty ]
+        Vars = 0, [ Map.empty ]
         Closures = []
+        VarDesc = []
+        ScopeDesc = []
+        TagCount = 0
     }
 
-    let pushScope = updateUserState (fun s ->
-        let i, lst = s.Vars
-        { s with Vars = i, (Map.ofList []) :: lst })
-    let popScope = updateUserState (fun s ->
-        match s.Vars with
-        | i, _ :: ms -> { s with Vars = i, ms }
-        | _ -> failwith "invalid popScope")
-    let betweenScope p = between pushScope popScope p
+    let createTag desc =
+        getUserState >>= (fun s ->
+            match s.ScopeDesc with
+            | (d, t) :: ds -> setUserState { s with ScopeDesc = (d, t + 1) :: ds } >>% (t + 1)
+            | [] -> let t = s.TagCount + 1 in setUserState { s with TagCount = t } >>% t)
+        |>> sprintf "#%s_%d" desc
 
-    let pushClosure = pushScope >>. updateUserState (fun s ->
+    let pushScope desc = updateUserState (fun s ->
+        let i, lst = s.Vars
+        { s with Vars = i, (Map.ofList []) :: lst; ScopeDesc = (desc, 0) :: s.ScopeDesc })
+
+    let popScope = updateUserState (fun s ->
+        match s.Vars, s.ScopeDesc with
+        | (i, _ :: ms), (_ :: ds) -> { s with Vars = i, ms; ScopeDesc = ds }
+        | _ -> failwith "invalid popScope")
+
+    let pushClosure desc = pushScope desc >>. updateUserState (fun s ->
         let _, scopes = s.Vars
         { s with Closures = (List.length scopes, Set.empty) :: s.Closures })
+
     let popClosure = getUserState >>= (fun s ->
         match s.Closures with
         | (scope, set) :: sx -> setUserState { s with Closures = sx } >>% List.ofSeq set
         | _ -> failwith "invalid popClosure") .>> popScope
 
     let addVariable var =
+        let getDesc scope =
+            var :: (List.map fst scope) |> List.rev |> String.concat ":"
         getUserState >>= (fun s ->
         match s.Vars with
         | i, m :: ms ->
-            if Map.containsKey var m then failFatally (sprintf "variable '%s' already exists in this scope" var)
-            else setUserState { s with Vars = i + 1, Map.add var i m :: ms } >>% i
-        | i, [] -> setUserState { s with Vars = i + 1, [ Map.ofList [var, i] ] } >>% i)
+            if Map.containsKey var m then
+                failFatally (sprintf "variable '%s' already exists in this scope" var)
+            else
+                let vm = i + 1, Map.add var (i + 1) m :: ms
+                let desc = getDesc s.ScopeDesc :: s.VarDesc
+                setUserState { s with Vars = vm; VarDesc = desc } >>% (i + 1)
+        | i, [] ->
+            let vm = i + 1, [ Map.ofList [var, i + 1] ]
+            setUserState { s with Vars = vm } >>% (i + 1))
 
     let referenceVariable var =
         let rec tryFind scope key = function
@@ -133,6 +155,8 @@ module Parser =
 
     let variableRef = identifier >>= ParserState.referenceVariable
 
+    let lit_null = token "null"
+
     let lit_string =
         let normal = satisfy (fun c -> c <> '\\' && c <> '"')
         let escaped = skipChar '\\' >>. (anyOf "\"\\bfnrt" |>> function
@@ -142,7 +166,6 @@ module Parser =
 
     let lit_number = pfloat .>> ws
     let lit_boolean = (token "true" >>% true) <|> (token "false" >>% false)
-    let lit_null = token "null"
 
     let private binop str f = ws >>. token str >>. preturn (fun x y -> f (x, y))
 
@@ -221,12 +244,15 @@ module Parser =
     and terminal x =
         let expr_array =
             between (token "{") (token "}") (sepBy expression (token ","))
-        let funDef =
+        let functionDef =
             let param = identifier >>= ParserState.addVariable
+            let name = opt identifier >>= function
+                | Some x -> ParserState.addVariable x .>> ParserState.pushClosure x |>> Some
+                | None -> ParserState.createTag "fun" >>= ParserState.pushClosure >>% None
             let ps = between (token "(") (token ")") (sepBy param (token ","))
-            token "fun" >>. ParserState.pushClosure >>. (ps .>>. block .>>. ParserState.popClosure)
-            |>> (fun ((par, body), closure) -> par, closure, body)
-        ((funDef |>> Function)
+            token "fun" >>. (name .>>. ps .>>. block .>>. ParserState.popClosure)
+            |>> (fun (((n, par), body), closure) -> par, n, closure, body)
+        ((functionDef |>> Function)
         <|> (lit_null >>% LiteralNull)
         <|> (lit_boolean |>> LiteralBoolean)
         <|> (lit_string |>> LiteralString)
@@ -249,12 +275,14 @@ module Parser =
     and private blockContent p = sepEndBy (p .>> ws) ((skipAnyOf "\n;") .>> ws)
     and block = between (token1 "begin") (token "end") (blockContent statement)
 
-    and ifThen =
-        let first = (token "if" >>. expression) .>>. (token "then" >>. blockContent statement)
-        let middle = (token "elif" >>. expression) .>>. (token "then" >>. blockContent statement)
-        let last = token "else" >>. blockContent statement
+    and ifThen x =
+        let scope desc = ParserState.createTag desc >>= ParserState.pushScope
+        let body desc = scope desc >>. blockContent statement .>> ParserState.popScope
+        let first = (token "if" >>. expression) .>>. (token "then" >>. body "if")
+        let middle = (token "elif" >>. expression) .>>. (token "then" >>. body "elif")
+        let last = token "else" >>. body "else"
         let p = (first .>>. many middle) .>>. (last <|>% []) .>> token "end"
-        p |>> (fun (((a, b), xs), y) -> a, b, xs, y)
+        (p |>> (fun (((a, b), xs), y) -> a, b, xs, y)) x
 
     and private loop_stt =
         (token "break" >>% BreakStatement)
@@ -262,11 +290,15 @@ module Parser =
         <|> (statement |>> Ordinary)
 
     and whileDo =
-        (token "while" >>. expression) .>>. (token "do" >>. blockContent loop_stt .>> token "end")
+        let scope = ParserState.createTag "while" >>= ParserState.pushScope
+        let body = scope >>. blockContent loop_stt .>> ParserState.popScope
+        (token "while" >>. expression) .>>. (token "do" >>. body .>> token "end")
 
     and forIn =
-        let first = (token "for" >>. identifier >>= ParserState.addVariable) .>>. (token "in" >>. expression)
-        let p = first .>>. (blockContent loop_stt .>> token "end")
-        token "do" >>. ParserState.betweenScope p |>> (fun ((index, obj), block) -> (index, obj, block))
+        let scope = ParserState.createTag "for" >>= ParserState.pushScope
+        let first = (token "for" >>. scope >>. identifier >>= ParserState.addVariable) .>>. (token "in" >>. expression)
+        let body = between (token "do") (token "end") (blockContent loop_stt)
+        (first .>>. body) .>> ParserState.popScope
+        |>> (fun ((index, obj), block) -> (index, obj, block))
 
     let script = (blockContent statement .>> eof)

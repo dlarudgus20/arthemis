@@ -45,7 +45,7 @@ precedence | left-to-right | right-to-left | unary
 - <code>*function-expr* ( *[ arg1, ... ]* )</code>
 - <code>*expr1* *infix-op* *expr2*</code>
 - <code>*prefix-op* *expr*</code>
-- <code>fun ( *[ identifier1, ... ]* ) begin *block-content* end</code>
+- <code>fun *identifier* ( *[ identifier1, ... ]* ) begin *block-content* end</code>
 
 # statement
 
