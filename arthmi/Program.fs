@@ -2,9 +2,34 @@
 open Arthemis
 open FParsec
 
-while true do
-    Console.Write "> "
+type ReplState = {
+    ParserState: ParserState
+    Verbose: bool
+}
+
+let rec mainLoop state =
+    printf "> "
     let line = Console.ReadLine ()
-    match ParseTree.parseScript line with
-    | Success (result, _, _) -> printfn "%A" result
-    | Failure (msg, _, _) -> printfn "%s" msg
+    if line = ".exit" then
+        printfn "bye"
+        ()
+    elif line = ".reset" then
+        printfn "reset parser state"
+        mainLoop { state with ParserState = ParserState.empty }
+    elif line = ".verbose" then
+        printfn "verbose mode %s" (if state.Verbose then "off" else "on")
+        mainLoop { state with Verbose = not state.Verbose }
+    else
+        match runParserOnString Parser.script state.ParserState "" line with
+        | Success (cst, ps, _) ->
+            printfn "AST parse result: %A" cst
+            if state.Verbose then printfn "Parser State: %A" ps
+            mainLoop { state with ParserState = ps }
+        | Failure (msg, _, _) ->
+            printfn "AST parse error: %s" msg
+            mainLoop state
+
+mainLoop {
+    ParserState = ParserState.empty
+    Verbose = true
+}

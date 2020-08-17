@@ -35,6 +35,7 @@ precedence | left-to-right | right-to-left | unary
 
 # expression
 
+- *`identifier`*
 - string literal
 - numeric literal
 - `null` literal
@@ -48,7 +49,8 @@ precedence | left-to-right | right-to-left | unary
 
 # statement
 
-*block-content* is <code>*[ statement1 (\<newline\>|;) ... ]*</code>.
+ - *block-content* is <code>*[ statement1 (\<newline\>|;) ... ]*</code>.
+ - *loop-content* is <code>*[ (* break * |* continue * | statement1) (\<newline\>|;) ... ]*</code>.
 
 - `break`
 - `continue`
@@ -57,3 +59,5 @@ precedence | left-to-right | right-to-left | unary
 - <code>if *expr* then *block-content* *[* elif *expr* then *block-content ... ]* *[* else *block-content ]* end</code>
 - <code>while *expr* do *block-content* end</code>
 - <code>for *identifier* in *expr* do *block-content* end</code>
+
+# intermediate representation (*.muni*)

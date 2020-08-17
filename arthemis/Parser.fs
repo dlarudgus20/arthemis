@@ -3,7 +3,7 @@
 open FParsec
 
 type Expression =
-    | Identifier of string
+    | VariableRef of int
     | LiteralString of string
     | LiteralNumber of float
     | LiteralBoolean of bool
@@ -33,18 +33,74 @@ type Expression =
     | Subscription of Expression * Expression
     | ArrayExpr of Expression list
     | TableExpr of (string * Expression) list
-    | Function of string list * Statement list
+    | Function of param: int list * closure: int list * body: Statement list
 and Statement =
     | Expression of Expression
-    | Variable of string * Expression
+    | VariableDecl of int * Expression
     | Block of Statement list
-    | IfThen of Expression * Statement list * (Expression * Statement list) list * Statement list option
-    | WhileDo of Expression * Statement list
-    | ForIn of string * Expression * Statement list
+    | IfThen of Expression * Statement list * (Expression * Statement list) list * Statement list
+    | WhileDo of Expression * LoopStatement list
+    | ForIn of int * Expression * LoopStatement list
+and LoopStatement =
+    | Ordinary of Statement
     | BreakStatement
     | ContinueStatement
 
-module ParseTree =
+type ParserState = {
+    Vars: int * Map<string, int> list
+    Closures: (int * Set<int>) list
+}
+
+module ParserState =
+    let empty = {
+        Vars = 1, [ Map.empty ]
+        Closures = []
+    }
+
+    let pushScope = updateUserState (fun s ->
+        let i, lst = s.Vars
+        { s with Vars = i, (Map.ofList []) :: lst })
+    let popScope = updateUserState (fun s ->
+        match s.Vars with
+        | i, _ :: ms -> { s with Vars = i, ms }
+        | _ -> failwith "invalid popScope")
+    let betweenScope p = between pushScope popScope p
+
+    let pushClosure = pushScope >>. updateUserState (fun s ->
+        let _, scopes = s.Vars
+        { s with Closures = (List.length scopes, Set.empty) :: s.Closures })
+    let popClosure = getUserState >>= (fun s ->
+        match s.Closures with
+        | (scope, set) :: sx -> setUserState { s with Closures = sx } >>% List.ofSeq set
+        | _ -> failwith "invalid popClosure") .>> popScope
+
+    let addVariable var =
+        getUserState >>= (fun s ->
+        match s.Vars with
+        | i, m :: ms ->
+            if Map.containsKey var m then failFatally (sprintf "variable '%s' already exists in this scope" var)
+            else setUserState { s with Vars = i + 1, Map.add var i m :: ms } >>% i
+        | i, [] -> setUserState { s with Vars = i + 1, [ Map.ofList [var, i] ] } >>% i)
+
+    let referenceVariable var =
+        let rec tryFind scope key = function
+        | i, m :: ms ->
+            match Map.tryFind key m with
+            | Some x -> Some (scope, x)
+            | None -> tryFind (scope - 1) key (i, ms)
+        | _, [] -> None
+        getUserState >>= (fun s ->
+            let topmost = List.length (snd s.Vars)
+            match tryFind topmost var s.Vars with
+            | Some (varScope, varIndex) ->
+                match s.Closures with
+                | (scope, scopeSet) :: sx when varScope < scope ->
+                    let e = scope, Set.add varIndex scopeSet
+                    setUserState { s with Closures = e :: sx } >>% varIndex
+                | _ -> preturn varIndex
+            | None -> fail (sprintf "variable '%s' is not found" var))
+
+module Parser =
     let keywords = Set.ofList [
        "var";
        "fun";
@@ -75,6 +131,8 @@ module ParseTree =
             if Set.contains str keywords then fail "keyword cannot be identifier" else (preturn str))
             .>> ws
 
+    let variableRef = identifier >>= ParserState.referenceVariable
+
     let lit_string =
         let normal = satisfy (fun c -> c <> '\\' && c <> '"')
         let escaped = skipChar '\\' >>. (anyOf "\"\\bfnrt" |>> function
@@ -85,9 +143,6 @@ module ParseTree =
     let lit_number = pfloat .>> ws
     let lit_boolean = (token "true" >>% true) <|> (token "false" >>% false)
     let lit_null = token "null"
-
-    let stt_break = token "break"
-    let stt_continue = token "continue"
 
     let private binop str f = ws >>. token str >>. preturn (fun x y -> f (x, y))
 
@@ -167,47 +222,51 @@ module ParseTree =
         let expr_array =
             between (token "{") (token "}") (sepBy expression (token ","))
         let funDef =
-            let param = token "fun" >>. between (token "(") (token ")") (sepBy identifier (token ","))
-            let content = token "begin" >>. blockContent .>> token "end" .>> ws
-            param .>>. content
+            let param = identifier >>= ParserState.addVariable
+            let ps = between (token "(") (token ")") (sepBy param (token ","))
+            token "fun" >>. ParserState.pushClosure >>. (ps .>>. block .>>. ParserState.popClosure)
+            |>> (fun ((par, body), closure) -> par, closure, body)
         ((funDef |>> Function)
         <|> (lit_null >>% LiteralNull)
         <|> (lit_boolean |>> LiteralBoolean)
         <|> (lit_string |>> LiteralString)
         <|> (lit_number |>> LiteralNumber)
-        <|> (identifier |>> Identifier)
+        <|> (variableRef |>> VariableRef)
         <|> (expr_array |>> ArrayExpr)) x
 
     and statement x =
-        ((variable |>> Variable)
-        <|> (stt_break >>% BreakStatement)
-        <|> (stt_continue >>% ContinueStatement)
+        ((variableDecl |>> VariableDecl)
         <|> (block |>> Block)
         <|> (ifThen |>> IfThen)
         <|> (whileDo |>> WhileDo)
         <|> (forIn |>> ForIn)
         <|> (expression |>> Expression)) x
 
-    and variable =
-        (skipString "var" >>. ws1 >>. identifier .>>. (token "=" >>. expression))
+    and variableDecl =
+        let decl = identifier >>= ParserState.addVariable
+        (skipString "var" >>. ws1 >>. decl) .>>. (token "=" >>. expression)
 
-    and private blockContent = sepEndBy (statement .>> ws) ((skipAnyOf "\n;") .>> ws)
-    and block = between (token1 "begin") (token "end") blockContent
+    and private blockContent p = sepEndBy (p .>> ws) ((skipAnyOf "\n;") .>> ws)
+    and block = between (token1 "begin") (token "end") (blockContent statement)
 
     and ifThen =
-        let first = (token "if" >>. expression) .>>. (token "then" >>. blockContent)
-        let middle = (token "elif" >>. expression) .>>. (token "then" >>. blockContent)
-        let last = token "else" >>. blockContent
-        let p = (first .>>. many middle) .>>. opt last .>> token "end"
-        p |>> (fun (((a, b), xs), y) -> (a, b, xs, y))
+        let first = (token "if" >>. expression) .>>. (token "then" >>. blockContent statement)
+        let middle = (token "elif" >>. expression) .>>. (token "then" >>. blockContent statement)
+        let last = token "else" >>. blockContent statement
+        let p = (first .>>. many middle) .>>. (last <|>% []) .>> token "end"
+        p |>> (fun (((a, b), xs), y) -> a, b, xs, y)
+
+    and private loop_stt =
+        (token "break" >>% BreakStatement)
+        <|> (token "continue" >>% ContinueStatement)
+        <|> (statement |>> Ordinary)
 
     and whileDo =
-        (token "while" >>. expression) .>>. (token "do" >>. blockContent .>> token "end")
+        (token "while" >>. expression) .>>. (token "do" >>. blockContent loop_stt .>> token "end")
 
     and forIn =
-        let first = (token "for" >>. identifier) .>>. (token "in" >>. expression)
-        let p = first .>>. (token "do" >>. blockContent .>> token "end")
-        p |>> (fun ((index, obj), block) -> (index, obj, block))
+        let first = (token "for" >>. identifier >>= ParserState.addVariable) .>>. (token "in" >>. expression)
+        let p = first .>>. (blockContent loop_stt .>> token "end")
+        token "do" >>. ParserState.betweenScope p |>> (fun ((index, obj), block) -> (index, obj, block))
 
-    let parseScript str =
-        run (statement) str
+    let script = (blockContent statement .>> eof)

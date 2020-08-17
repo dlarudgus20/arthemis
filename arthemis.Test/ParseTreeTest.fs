@@ -4,19 +4,19 @@ open NUnit.Framework
 open FParsec
 
 open Arthemis
-open Arthemis.ParseTree
+open Arthemis.Parser
 
 [<TestFixture>]
 type ParseTreeTest() =
     let passTest parser (tests: (string * bool) list) =
         tests |> List.iter (fun (str, exp) ->
-            match run (parser .>> eof) str with
+            match runParserOnString (parser .>> eof) ParserState.empty "" str with
             | Success _ -> Assert.True (exp, str)
             | Failure (msg, _, _) -> Assert.False (exp, sprintf "'%s': %s" str msg))
 
     let exprTest parser (tests: (string * Expression option) list) =
         tests |> List.iter (fun (str, exp) ->
-            match run (parser .>> eof) str with
+            match runParserOnString (parser .>> eof) ParserState.empty "" str with
             | Success (result, _, _) ->
                 match exp with
                 | Some expected -> Assert.AreEqual(expected, result, str)
@@ -54,5 +54,5 @@ type ParseTreeTest() =
     [<Test>]
     member this.ParenthesisTest () =
         exprTest expression [
-            "a", Some (Identifier "a")
+            "(1+2)*3", Some (Multiply (Addition (LiteralNumber 1.0, LiteralNumber 2.0), LiteralNumber 3.0))
         ]
