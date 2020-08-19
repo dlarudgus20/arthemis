@@ -2,25 +2,43 @@ namespace Arthemis
 
 open StateBuilder
 
-type CodeRepr =
-    | MultipleCode of CodeRepr list
-    | NopCode
-    | LoadNull of int
-    | LoadString of int * string
-    | LoadNumber of int * float
-    | LoadBoolean of int * bool
-    | LoadType of int * int
-    | Assign of int * int
-    | NumPlus of int * int
-    | NumMinus of int * int
-    | BoolNot of int * int
+type CodeTree =
+    | LoadNull
+    | LoadString of string
+    | LoadNumber of float
+    | LoadBoolean of bool
+    | LoadVariable of int
+    | LoadType of CodeTree
+    | StoreVariable of int * CodeTree
+    | LoadElement of CodeTree * CodeTree
+    | StoreElement of CodeTree * CodeTree * CodeTree
+    | NewTable
+    | NumPlus of CodeTree
+    | NumMinus of CodeTree
+    | BoolNot of CodeTree
+    | NumMul of CodeTree * CodeTree
+    | NumDiv of CodeTree * CodeTree
+    | NumMod of CodeTree * CodeTree
+    | NumBitOr of CodeTree * CodeTree
+    | NumBitAnd of CodeTree * CodeTree
+    | NumBitXor of CodeTree * CodeTree
+    | NumAdd of CodeTree * CodeTree
+    | NumSub of CodeTree * CodeTree
+    | CompLt of CodeTree * CodeTree
+    | CompLeq of CodeTree * CodeTree
+    | CompGt of CodeTree * CodeTree
+    | CompGeq of CodeTree * CodeTree
+    | CompEq of CodeTree * CodeTree
+    | CompNeq of CodeTree * CodeTree
+    | Select of CodeTree * CodeTree * CodeTree
+    | Invoke of CodeTree * CodeTree list
 
 type CodeBlockEnd =
     | UnconditionalJump of CodeBlock
     | ConditionalJump of int * CodeBlock * CodeBlock
 and CodeBlock = {
     phi: (int * int list) list
-    content: CodeRepr
+    content: CodeTree
     last: CodeBlockEnd
 }
 
@@ -48,90 +66,66 @@ module CompileState =
             next, { s with VarCount = next; VarDesc = vd })
 
 module CodeBlock =
-    let rec stuck = { phi = []; content = NopCode; last = UnconditionalJump stuck }
+    let rec stuck = { phi = []; content = LoadNull; last = UnconditionalJump stuck }
 
-    let rec compileStatement (stt: Statement) = state {
+    let rec compileStatement (stt: Statement) =
+        let compileBlock (body: Statement list) = LoadNull
         match stt with
-        | Expression expr ->
-            let! content = compileExpression None expr
-            return {
-                phi = []
-                content = content
-                last = UnconditionalJump stuck
-            }
-        | VariableDecl (var, expr) ->
-            let! content = compileExpression (Some var) expr
-            return {
-                phi = []
-                content = content
-                last = UnconditionalJump stuck
-            }
-        | Block body -> return stuck
-        | IfThen (cond, body, middle, es) -> return stuck
-        | WhileDo (cond, body) -> return stuck
-        | ForIn (var, obj, body) -> return stuck
-        }
+        | Expression expr -> compileExpr expr
+        | VariableDecl (var, expr) -> StoreVariable (var, compileExpr expr)
+        | Block body -> compileBlock body
+        | IfThen (cond, body, middle, es) ->
+            List.foldBack (fun (cond', body') es' ->
+                Select (compileExpr cond', compileBlock body', es'))
+                ((cond, body) :: middle)
+                (compileBlock es)
+        | WhileDo (cond, body) -> LoadNull
+        | ForIn (var, obj, body) -> LoadNull
 
-    and compileExpression (target: int option) (expr: Expression) = state {
-        let unary f arg = state {
-            let! temp = CompileState.addTempVar target
-            let! code = compileExpression (Some temp) arg
-            let v = match target with Some t -> t | None -> temp
-            return MultipleCode [ code; f (v, temp) ]
-        }
-        let binary f arg1 arg2 = state {
-            let! t1 = CompileState.addTempVar target
-            let! t2 = CompileState.addTempVar target
-            let! c1 = compileExpression (Some t1) arg1
-            let! c2 = compileExpression (Some t2) arg2
-            let v = match target with Some t -> t | None -> t1
-            return MultipleCode [ c1; c2; f (v, t1, t2) ]
-        }
+    and compileExpr (expr: Expression) =
+        let unary f arg = f (compileExpr arg)
+        let binary f arg1 arg2 = f (compileExpr arg1, compileExpr arg2)
         match expr with
-        | VariableRef var ->
-            match target with
-            | Some t -> return Assign (t, var)
-            | None -> return NopCode
-        | LiteralNull ->
-            match target with
-            | Some t -> return LoadNull t
-            | None -> return NopCode
-        | LiteralString str ->
-            match target with
-            | Some t -> return LoadString (t, str)
-            | None -> return NopCode
-        | LiteralNumber n ->
-            match target with
-            | Some t -> return LoadNumber (t, n)
-            | None -> return NopCode
-        | LiteralBoolean b ->
-            match target with
-            | Some t -> return LoadBoolean (t, b)
-            | None -> return NopCode
-        | UnaryPlus arg -> return! unary NumPlus arg
-        | UnaryMinus arg -> return! unary NumMinus arg
-        | LogicalNOT arg -> return! unary BoolNot arg
-        | Assignment (arg1, arg2) -> return NopCode
-        | Multiply (arg1, arg2) -> return NopCode
-        | Division (arg1, arg2) -> return NopCode
-        | Modular (arg1, arg2) -> return NopCode
-        | BitwiseOR (arg1, arg2) -> return NopCode
-        | BitwiseAND (arg1, arg2) -> return NopCode
-        | BitwiseXOR (arg1, arg2) -> return NopCode
-        | Addition (arg1, arg2) -> return NopCode
-        | Subtraction (arg1, arg2) -> return NopCode
-        | LessThan (arg1, arg2) -> return NopCode
-        | LessOrEq (arg1, arg2) -> return NopCode
-        | GreaterThan (arg1, arg2) -> return NopCode
-        | GreaterOrEq (arg1, arg2) -> return NopCode
-        | EqualTo (arg1, arg2) -> return NopCode
-        | NotEqualTo (arg1, arg2) -> return NopCode
-        | LogicalAND (arg1, arg2) -> return NopCode
-        | LogicalOR (arg1, arg2) -> return NopCode
-        | CallExpr (fn, args) -> return NopCode
-        | MemberAccess (obj, name) -> return NopCode
-        | Subscription (obj, index) -> return NopCode
-        | ArrayExpr lst -> return NopCode
-        | TableExpr lst -> return NopCode
-        | Function (param, name, closure, body) -> return NopCode
-        }
+        | VariableRef var -> LoadVariable var
+        | LiteralNull -> LoadNull
+        | LiteralString str -> LoadString str
+        | LiteralNumber n -> LoadNumber n
+        | LiteralBoolean b -> LoadBoolean b
+        | UnaryPlus arg -> unary NumPlus arg
+        | UnaryMinus arg -> unary NumPlus arg
+        | LogicalNOT arg -> unary NumPlus arg
+        | Assignment (arg1, arg2) ->
+            match arg1 with
+            | VariableRef x ->
+                StoreVariable (x, compileExpr arg2)
+            | MemberAccess (obj, name) ->
+                StoreElement (compileExpr obj, LoadString name, compileExpr arg2)
+            | Subscription (obj, index) ->
+                StoreElement (compileExpr obj, compileExpr index, compileExpr arg2)
+            | _ -> failwith "only variable, member, or subscription can be assigned"
+        | Multiply (arg1, arg2) -> binary NumMul arg1 arg2
+        | Division (arg1, arg2) -> binary NumDiv arg1 arg2
+        | Modular (arg1, arg2) -> binary NumMod arg1 arg2
+        | BitwiseOR (arg1, arg2) -> binary NumBitOr arg1 arg2
+        | BitwiseAND (arg1, arg2) -> binary NumBitAnd arg1 arg2
+        | BitwiseXOR (arg1, arg2) -> binary NumBitXor arg1 arg2
+        | Addition (arg1, arg2) -> binary NumAdd arg1 arg2
+        | Subtraction (arg1, arg2) -> binary NumSub arg1 arg2
+        | LessThan (arg1, arg2) -> binary CompLt arg1 arg2
+        | LessOrEq (arg1, arg2) -> binary CompLeq arg1 arg2
+        | GreaterThan (arg1, arg2) -> binary CompGt arg1 arg2
+        | GreaterOrEq (arg1, arg2) -> binary CompGeq arg1 arg2
+        | EqualTo (arg1, arg2) -> binary CompEq arg1 arg2
+        | NotEqualTo (arg1, arg2) -> binary CompNeq arg1 arg2
+        | LogicalAND (arg1, arg2) -> Select (compileExpr arg1, LoadBoolean true, compileExpr arg2)
+        | LogicalOR (arg1, arg2) -> Select (compileExpr arg1, compileExpr arg2, LoadBoolean false)
+        | MemberAccess (obj, name) -> LoadElement (compileExpr obj, LoadString name)
+        | Subscription (obj, index) -> LoadElement (compileExpr obj, compileExpr index)
+        | CallExpr (fn, args) -> Invoke (compileExpr fn, List.map compileExpr args)
+        | ArrayExpr lst ->
+            lst |> List.fold (fun (obj, index) value ->
+                StoreElement (obj, LoadNumber index, compileExpr value), index + 1.0) (NewTable, 0.0) |> fst
+        | TableExpr lst ->
+            lst |> List.fold (fun obj (index, value) ->
+                StoreElement (obj, LoadString index, compileExpr value)) NewTable
+        | Function (param, name, closure, body) -> LoadNull
