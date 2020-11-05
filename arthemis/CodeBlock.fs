@@ -45,12 +45,13 @@ and CodeBlock = {
 type CompileState = {
     VarCount: int
     VarDesc: Map<int, string * int>
+    Functions: Map<int, CodeTree>
 }
 
 module CompileState =
     let ofParserState (state: ParserState) =
         let desc = state.VarDesc |> List.rev |> List.mapi (fun i x -> i + 1, (x, 0)) |> Map.ofList
-        { VarCount = fst state.Vars; VarDesc = desc }
+        { VarCount = fst state.Vars; VarDesc = desc; Functions = Map.empty }
 
     let addTempVar (origin: int option) = State (fun s ->
         let next = s.VarCount + 1
@@ -68,40 +69,31 @@ module CompileState =
 module CodeBlock =
     let rec stuck = { phi = []; content = LoadNull; last = UnconditionalJump stuck }
 
-    let rec compileStatement (stt: Statement) =
-        let compileBlock (body: Statement list) = LoadNull
-        match stt with
-        | Expression expr -> compileExpr expr
-        | VariableDecl (var, expr) -> StoreVariable (var, compileExpr expr)
-        | Block body -> compileBlock body
-        | IfThen (cond, body, middle, es) ->
-            List.foldBack (fun (cond', body') es' ->
-                Select (compileExpr cond', compileBlock body', es'))
-                ((cond, body) :: middle)
-                (compileBlock es)
-        | WhileDo (cond, body) -> LoadNull
-        | ForIn (var, obj, body) -> LoadNull
+    let rec compileBlock (body: Statement list) =
+        LoadNull
 
-    and compileExpr (expr: Expression) =
-        let unary f arg = f (compileExpr arg)
-        let binary f arg1 arg2 = f (compileExpr arg1, compileExpr arg2)
+    and compileExpr (expr: Expression): State<CompileState, CodeTree> =
+        let unary f arg = compileExpr arg |>> f
+        let binary f arg1 arg2 = (compileExpr arg1 .>>. compileExpr arg2) |>> f
         match expr with
-        | VariableRef var -> LoadVariable var
-        | LiteralNull -> LoadNull
-        | LiteralString str -> LoadString str
-        | LiteralNumber n -> LoadNumber n
-        | LiteralBoolean b -> LoadBoolean b
+        | VariableRef var -> State.ofValue (LoadVariable var)
+        | LiteralNull -> State.ofValue LoadNull
+        | LiteralString str -> State.ofValue (LoadString str)
+        | LiteralNumber n -> State.ofValue (LoadNumber n)
+        | LiteralBoolean b -> State.ofValue (LoadBoolean b)
         | UnaryPlus arg -> unary NumPlus arg
         | UnaryMinus arg -> unary NumPlus arg
         | LogicalNOT arg -> unary NumPlus arg
         | Assignment (arg1, arg2) ->
             match arg1 with
             | VariableRef x ->
-                StoreVariable (x, compileExpr arg2)
+                compileExpr arg2 |>> fun a -> StoreVariable (x, a)
             | MemberAccess (obj, name) ->
-                StoreElement (compileExpr obj, LoadString name, compileExpr arg2)
+                compileExpr obj .>>. compileExpr arg2
+                |>> fun (a, b) -> StoreElement (a, LoadString name, b)
             | Subscription (obj, index) ->
-                StoreElement (compileExpr obj, compileExpr index, compileExpr arg2)
+                compileExpr obj .>>. compileExpr index .>>. compileExpr arg2
+                |>> fun ((a, b), c) -> StoreElement (a, b, c)
             | _ -> failwith "only variable, member, or subscription can be assigned"
         | Multiply (arg1, arg2) -> binary NumMul arg1 arg2
         | Division (arg1, arg2) -> binary NumDiv arg1 arg2
@@ -117,15 +109,36 @@ module CodeBlock =
         | GreaterOrEq (arg1, arg2) -> binary CompGeq arg1 arg2
         | EqualTo (arg1, arg2) -> binary CompEq arg1 arg2
         | NotEqualTo (arg1, arg2) -> binary CompNeq arg1 arg2
-        | LogicalAND (arg1, arg2) -> Select (compileExpr arg1, LoadBoolean true, compileExpr arg2)
-        | LogicalOR (arg1, arg2) -> Select (compileExpr arg1, compileExpr arg2, LoadBoolean false)
-        | MemberAccess (obj, name) -> LoadElement (compileExpr obj, LoadString name)
-        | Subscription (obj, index) -> LoadElement (compileExpr obj, compileExpr index)
-        | CallExpr (fn, args) -> Invoke (compileExpr fn, List.map compileExpr args)
+        | LogicalAND (arg1, arg2) ->
+            compileExpr arg1 .>>. compileExpr arg2
+            |>> fun (a, b) -> Select (a, LoadBoolean true, b)
+        | LogicalOR (arg1, arg2) ->
+            compileExpr arg1 .>>. compileExpr arg2
+            |>> fun (a, b) -> Select (a, b, LoadBoolean false)
+        | MemberAccess (obj, name) ->
+            compileExpr obj |>> fun a -> LoadElement (a, LoadString name)
+        | Subscription (obj, index) ->
+            compileExpr obj .>>. compileExpr index
+            |>> fun (a, b) -> LoadElement (a, b)
+        | CallExpr (fn, args) ->
+            compileExpr fn .>>. State.mapM compileExpr args
+            |>> fun (a, b) -> Invoke (a, b)
         | ArrayExpr lst ->
-            lst |> List.fold (fun (obj, index) value ->
-                StoreElement (obj, LoadNumber index, compileExpr value), index + 1.0) (NewTable, 0.0) |> fst
+            let folder p value =
+                p .>>. compileExpr value
+                |>> fun ((obj, index), x) -> StoreElement (obj, LoadNumber index, x), index + 1.0
+            let initial = State.ofValue (NewTable, 0.0)
+            lst |> List.fold folder initial |>> fst
         | TableExpr lst ->
-            lst |> List.fold (fun obj (index, value) ->
-                StoreElement (obj, LoadString index, compileExpr value)) NewTable
-        | Function (param, name, closure, body) -> LoadNull
+            let folder p (index, value) =
+                p .>>. compileExpr value
+                |>> fun (obj, x) -> StoreElement (obj, LoadString index, x)
+            let initial = State.ofValue NewTable
+            lst |> List.fold folder initial
+        | Function (param, name, closure, body) -> state {
+            let! closure' =
+                State.mapM (fun v ->
+                    CompileState.addTempVar (Some v) |>> (fun v' -> v, v')) closure
+            let closureMap = Map.ofList closure'
+            return LoadNull
+        }

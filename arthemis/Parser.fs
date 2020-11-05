@@ -41,6 +41,7 @@ and Statement =
     | IfThen of Expression * Statement list * (Expression * Statement list) list * Statement list
     | WhileDo of Expression * LoopStatement list
     | ForIn of int * Expression * LoopStatement list
+    | ReturnStatement of Expression option
 and LoopStatement =
     | Ordinary of Statement
     | BreakStatement
@@ -266,6 +267,7 @@ module Parser =
         <|> (ifThen |>> IfThen)
         <|> (whileDo |>> WhileDo)
         <|> (forIn |>> ForIn)
+        <|> (stt_return |>> ReturnStatement)
         <|> (expression |>> Expression)) x
 
     and variableDecl =
@@ -300,5 +302,8 @@ module Parser =
         let body = between (token "do") (token "end") (blockContent loop_stt)
         (first .>>. body) .>> ParserState.popScope
         |>> (fun ((index, obj), block) -> (index, obj, block))
+
+    and stt_return =
+        token "return" >>. opt (ws1 >>. expression)
 
     let script = (blockContent statement .>> eof)
